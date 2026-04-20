@@ -33,20 +33,25 @@ function love.load()
 end
 
 function spawnEnemies(world)
-    local list = {}
-    local T    = World.T
-    math.randomseed(world.seed + 777)
+    local list  = {}
+    local T     = World.T
     local kinds = { "orc", "greenslime", "redslime", "bat" }
     local count = 0
-    for r = 3, world.rows - 2 do
-        for c = 3, world.cols - 2 do
-            if world.map[r][c] == T.GRASS and count < 14 then
-                if math.random() < 0.015 then
+    local maxE  = 18
+
+    math.randomseed(world.seed + 777)
+
+    for r = 4, 60 do
+        for c = 4, 60 do
+            if count >= maxE then break end
+            if not (r < 14 and c < 14) then
+                if world:tileAt(c, r) == T.GRASS and math.random() < 0.008 then
                     table.insert(list, Enemy:new(kinds[math.random(#kinds)], c, r))
                     count = count + 1
                 end
             end
         end
+        if count >= maxE then break end
     end
     return list
 end
@@ -232,4 +237,31 @@ function drawGameOver()
         string.format("Enemies slain: %d\n\nPress Space to try again", killCount or 0),
         0, sh / 2 + 10, sw, "center")
     love.graphics.setColor(1, 1, 1)
+end
+
+local _origFollow = Camera and Camera.follow
+if Camera then
+    function Camera:follow(player, world)
+        local sw, sh = love.graphics.getDimensions()
+        local tx = player.x + (TILE_SIZE * SCALE) / 2 - sw / 2
+        local ty = player.y + (TILE_SIZE * SCALE) / 2 - sh / 2
+
+        self.x = self.x + (tx - self.x) * 0.12
+        self.y = self.y + (ty - self.y) * 0.12
+
+        self.x = math.max(0, self.x)
+        self.y = math.max(0, self.y)
+
+        if self.shakeAmt > 0 then
+            local mag      = self.shakeAmt * 8
+            self.shakeOffX = math.random(-math.floor(mag), math.floor(mag))
+            self.shakeOffY = math.random(-math.floor(mag), math.floor(mag))
+            self.shakeAmt  = self.shakeAmt * 0.75
+            if self.shakeAmt < 0.01 then
+                self.shakeAmt  = 0
+                self.shakeOffX = 0
+                self.shakeOffY = 0
+            end
+        end
+    end
 end
