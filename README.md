@@ -73,7 +73,7 @@ love "Hollow Vale"
 | ---------- | ---------------- |
 | WASD       | Move             |
 | Arrow Keys | Alternative move |
-| Space or Z | Attack           |
+| Space      | Attack           |
 | Shift      | Guard            |
 | E          | Interact         |
 
