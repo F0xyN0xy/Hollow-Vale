@@ -37,6 +37,7 @@ Hollow Vale/
 │   ├── Player/
 │   ├── Monster/
 │   ├── NPC/
+│   ├── Attacking sprites/
 │   ├── Environment/
 │   ├── Object/
 │   ├── Projectile/
