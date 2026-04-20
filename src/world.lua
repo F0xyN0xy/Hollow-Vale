@@ -231,6 +231,9 @@ function World:new(seed)
     w.pickupSound = ok and snd or nil
     if w.pickupSound then w.pickupSound:setVolume(0.5) end
 
+    w.cols = 200
+    w.rows = 200
+
     w.waterTimer = 0
     w.waterFrame = 1
 
