@@ -1,7 +1,7 @@
-World = {}
-World.__index = World
+World            = {}
+World.__index    = World
 
-local T = {
+local T          = {
     GRASS    = 1,
     EARTH    = 2,
     WALL     = 3,
@@ -16,9 +16,9 @@ local T = {
     WATER_SE = 17,
     WATER_SW = 18,
 }
-World.T = T
+World.T          = T
 
-local SOLID = {
+local SOLID      = {
     [T.WALL] = true,
     [T.TREE] = true,
     [T.WATER] = true,
@@ -31,8 +31,7 @@ local SOLID = {
     [T.WATER_SE] = true,
     [T.WATER_SW] = true,
 }
-
-local IS_WATER = {
+local IS_WATER   = {
     [T.WATER] = true,
     [T.WATER_N] = true,
     [T.WATER_S] = true,
@@ -44,63 +43,128 @@ local IS_WATER = {
     [T.WATER_SW] = true,
 }
 
-local COLS = 40
-local ROWS = 30
+local CHUNK_SIZE = 16
+local RENDER_PAD = 2
 
-local function lerp(a, b, t) return a + (t * t * (3 - 2 * t)) * (b - a) end
+local Perlin     = {}
+do
+    local function fade(t) return t * t * t * (t * (t * 6 - 15) + 10) end
+    local function lerp(a, b, t) return a + t * (b - a) end
 
-local function hash(n)
-    n = math.abs(math.floor(n)) % 2147483647
-    n = (n * 1664525 + 1013904223) % 2147483648
-    n = (n * 22695477 + 1) % 2147483648
-    return n / 2147483648
-end
+    local function grad(hash, x, y)
+        local h = hash % 4
+        local u = h < 2 and x or y
+        local v = h < 2 and y or x
+        return ((h % 2 == 0) and u or -u) + ((math.floor(h / 2) % 2 == 0) and v or -v)
+    end
 
-local function noise2d(x, y, seed)
-    local s   = seed or 0
-    local ix  = math.floor(x); local iy = math.floor(y)
-    local fx  = x - ix; local fy = y - iy
-    local v00 = hash(ix + iy * 57 + s)
-    local v10 = hash(ix + 1 + iy * 57 + s)
-    local v01 = hash(ix + (iy + 1) * 57 + s)
-    local v11 = hash(ix + 1 + (iy + 1) * 57 + s)
-    return lerp(lerp(v00, v10, fx), lerp(v01, v11, fx), fy)
-end
-
-local function generateBase(seed)
-    local map = {}
-    for r = 1, ROWS do
-        map[r] = {}
-        for c = 1, COLS do
-            local n = noise2d(c * 0.18, r * 0.18, seed)
-            map[r][c] = (n < 0.38) and T.WATER or T.GRASS
+    function Perlin.buildPerm(seed)
+        local p = {}
+        for i = 0, 255 do p[i] = i end
+        math.randomseed(seed)
+        for i = 255, 1, -1 do
+            local j = math.random(0, i)
+            p[i], p[j] = p[j], p[i]
         end
+        local perm = {}
+        for i = 0, 511 do perm[i] = p[i % 256] end
+        return perm
     end
-    for r = 1, ROWS do
-        map[r][1] = T.WALL; map[r][COLS] = T.WALL
+
+    function Perlin.noise(perm, x, y)
+        local xi = math.floor(x) % 256
+        local yi = math.floor(y) % 256
+        local xf = x - math.floor(x)
+        local yf = y - math.floor(y)
+        local u  = fade(xf)
+        local v  = fade(yf)
+
+        local aa = perm[perm[xi] + yi]
+        local ab = perm[perm[xi] + yi + 1]
+        local ba = perm[perm[xi + 1] + yi]
+        local bb = perm[perm[xi + 1] + yi + 1]
+
+        return lerp(
+            lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u),
+            lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u),
+            v
+        )
     end
-    for c = 1, COLS do
-        map[1][c] = T.WALL; map[ROWS][c] = T.WALL
+
+    function Perlin.octave(perm, x, y, octaves, persistence, lacunarity)
+        local val  = 0
+        local amp  = 1
+        local freq = 1
+        local maxV = 0
+        for _ = 1, octaves do
+            val  = val + Perlin.noise(perm, x * freq, y * freq) * amp
+            maxV = maxV + amp
+            amp  = amp * persistence
+            freq = freq * lacunarity
+        end
+        return val / maxV
     end
-    return map
 end
 
-local function isGrass(map, r, c)
-    if r < 1 or r > ROWS or c < 1 or c > COLS then return true end
-    return not IS_WATER[map[r][c]] and map[r][c] ~= T.WALL
+local function rawTileAt(perm, tperm, col, row, worldSeed)
+    local scale      = 0.045
+    local n          = Perlin.octave(perm, col * scale, row * scale, 5, 0.55, 2.0)
+    local h          = (n + 1) * 0.5
+
+    local WORLD_EDGE = 200
+    if col <= 1 or row <= 1 or col >= WORLD_EDGE or row >= WORLD_EDGE then
+        return T.WALL
+    end
+
+    if h < 0.38 then return T.WATER end
+
+    local tscale     = 0.12
+    local tn         = Perlin.octave(tperm, col * tscale, row * tscale, 3, 0.6, 2.0)
+    local treeChance = (h - 0.38) * 1.5
+    if tn > (0.62 - treeChance * 0.18) then
+        return T.TREE
+    end
+
+    local escale = 0.08
+    local en     = Perlin.octave(perm, (col + 500) * escale, (row + 500) * escale, 2, 0.5, 2.0)
+    if en > 0.35 and h > 0.55 then
+        return T.EARTH
+    end
+
+    return T.GRASS
 end
 
-local function autotileWater(map)
-    local out = {}
-    for r = 1, ROWS do
-        out[r] = {}
-        for c = 1, COLS do
-            local id = map[r][c]
-            if id == T.WATER then
-                local gN = isGrass(map, r - 1, c)
-                local gS = isGrass(map, r + 1, c)
-                local gE = isGrass(map, r, c + 1)
-                local gW = isGrass(map, r, c - 1)
+local function autotileChunk(chunk, chunkCol, chunkRow, getTile)
+    local out   = {}
+    local cs    = CHUNK_SIZE
+    local baseC = (chunkCol - 1) * cs
+    local baseR = (chunkRow - 1) * cs
+
+    local function worldTile(c, r)
+        local lc = c - baseC
+        local lr = r - baseR
+        if lc >= 1 and lc <= cs and lr >= 1 and lr <= cs then
+            return chunk[lr][lc]
+        end
+        return getTile(c, r)
+    end
+
+    local function isPassable(c, r)
+        local id = worldTile(c, r)
+        return id ~= T.WALL and not IS_WATER[id]
+    end
+
+    for lr = 1, cs do
+        out[lr] = {}
+        for lc = 1, cs do
+            local id = chunk[lr][lc]
+            local wc = baseC + lc
+            local wr = baseR + lr
+            if IS_WATER[id] or id == T.WATER then
+                local gN = isPassable(wc, wr - 1)
+                local gS = isPassable(wc, wr + 1)
+                local gE = isPassable(wc + 1, wr)
+                local gW = isPassable(wc - 1, wr)
                 if gN and gE then
                     id = T.WATER_NE
                 elseif gN and gW then
@@ -119,75 +183,24 @@ local function autotileWater(map)
                     id = T.WATER_W
                 end
             end
-            out[r][c] = id
+            out[lr][lc] = id
         end
     end
     return out
 end
 
-local function scatterTrees(map, seed)
-    math.randomseed(seed + 9999)
-    for r = 2, ROWS - 1 do
-        for c = 2, COLS - 1 do
-            if map[r][c] == T.GRASS then
-                local ok = true
-                for dr = -1, 1 do
-                    for dc = -1, 1 do
-                        local row = map[r + dr]
-                        if row and IS_WATER[row[c + dc]] then ok = false end
-                    end
-                end
-                if ok and math.random() < 0.06 then
-                    map[r][c] = T.TREE
-                end
-            end
-        end
-    end
-end
-
-local function placeChests(map, seed, count)
-    math.randomseed(seed + 1234)
-    local chests   = {}
-    local items    = { "potion_red", "sword_normal", "coin_bronze", "boots", "key" }
-    local attempts = 0
-    while #chests < count and attempts < 2000 do
-        attempts = attempts + 1
-        local c = math.random(3, COLS - 2)
-        local r = math.random(3, ROWS - 2)
-        if map[r][c] == T.GRASS then
-            local clash = false
-            for _, ch in ipairs(chests) do
-                if math.abs(ch.col - c) < 3 and math.abs(ch.row - r) < 3 then
-                    clash = true; break
-                end
-            end
-            if not clash then
-                table.insert(chests, {
-                    col = c,
-                    row = r,
-                    item = items[math.random(#items)],
-                    opened = false
-                })
-            end
-        end
-    end
-    return chests
-end
-
 function World:new(seed)
-    local w    = setmetatable({}, World)
-    w.seed     = seed or math.random(1, 99999)
-    w.rows     = ROWS
-    w.cols     = COLS
+    local w  = setmetatable({}, World)
+    w.seed   = seed or math.random(1, 999999)
+    w.chunks = {}
+    w.chests = {}
 
-    local base = generateBase(w.seed)
-    scatterTrees(base, w.seed)
-    w.map         = autotileWater(base)
-    w.chests      = placeChests(w.map, w.seed, 8)
+    math.randomseed(w.seed)
+    w.perm        = Perlin.buildPerm(w.seed)
+    w.tperm       = Perlin.buildPerm(w.seed + 31337)
 
     local nv      = "assets/Environment/"
     local ob      = "assets/Object/"
-
     w.tiles       = {
         [T.GRASS]    = love.graphics.newImage(nv .. "grass00.png"),
         [T.EARTH]    = love.graphics.newImage(nv .. "earth.png"),
@@ -204,7 +217,6 @@ function World:new(seed)
         [T.WATER_SW] = love.graphics.newImage(nv .. "water07.png"),
     }
     w.waterRipple = love.graphics.newImage(nv .. "water01.png")
-
     w.chestClosed = love.graphics.newImage(ob .. "chest.png")
     w.chestOpened = love.graphics.newImage(ob .. "chest_opened.png")
 
@@ -222,19 +234,156 @@ function World:new(seed)
     w.waterTimer = 0
     w.waterFrame = 1
 
+    for cy = 0, 3 do
+        for cx = 0, 3 do
+            w:_loadChunk(cx, cy)
+        end
+    end
+
     return w
+end
+
+function World:_rawTile(col, row)
+    return rawTileAt(self.perm, self.tperm, col, row, self.seed)
+end
+
+local CHEST_ITEMS = { "potion_red", "sword_normal", "coin_bronze", "boots", "key" }
+
+function World:_loadChunk(cx, cy)
+    local key = cx .. "," .. cy
+    if self.chunks[key] then return self.chunks[key] end
+
+    local cs    = CHUNK_SIZE
+    local baseC = cx * cs
+    local baseR = cy * cs
+
+    local raw   = {}
+    for lr = 1, cs do
+        raw[lr] = {}
+        for lc = 1, cs do
+            raw[lr][lc] = self:_rawTile(baseC + lc, baseR + lr)
+        end
+    end
+
+    local function getTile(c, r) return self:_rawTile(c, r) end
+    local tiles = autotileChunk(raw, cx + 1, cy + 1, getTile)
+    local out = {}
+    local function isPassable(c, r)
+        local lc2 = c - baseC; local lr2 = r - baseR
+        local id
+        if lc2 >= 1 and lc2 <= cs and lr2 >= 1 and lr2 <= cs then
+            id = raw[lr2][lc2]
+        else
+            id = self:_rawTile(c, r)
+        end
+        return id ~= T.WALL and not IS_WATER[id]
+    end
+    for lr = 1, cs do
+        out[lr] = {}
+        for lc = 1, cs do
+            local id = raw[lr][lc]
+            if IS_WATER[id] or id == T.WATER then
+                local wc = baseC + lc; local wr = baseR + lr
+                local gN = isPassable(wc, wr - 1)
+                local gS = isPassable(wc, wr + 1)
+                local gE = isPassable(wc + 1, wr)
+                local gW = isPassable(wc - 1, wr)
+                if gN and gE then
+                    id = T.WATER_NE
+                elseif gN and gW then
+                    id = T.WATER_NW
+                elseif gS and gE then
+                    id = T.WATER_SE
+                elseif gS and gW then
+                    id = T.WATER_SW
+                elseif gN then
+                    id = T.WATER_N
+                elseif gS then
+                    id = T.WATER_S
+                elseif gE then
+                    id = T.WATER_E
+                elseif gW then
+                    id = T.WATER_W
+                end
+            end
+            out[lr][lc] = id
+        end
+    end
+
+    local chunkChests = {}
+    math.randomseed(self.seed + cx * 73856093 + cy * 19349663)
+    local numChests = (math.random() < 0.35) and math.random(1, 2) or 0
+    local attempts  = 0
+    local placed    = 0
+    while placed < numChests and attempts < 200 do
+        attempts = attempts + 1
+        local lc = math.random(2, cs - 1)
+        local lr = math.random(2, cs - 1)
+        if out[lr][lc] == T.GRASS then
+            local wc = baseC + lc
+            local wr = baseR + lr
+            local clash = false
+            for _, ch in ipairs(chunkChests) do
+                if math.abs(ch.col - wc) < 3 and math.abs(ch.row - wr) < 3 then
+                    clash = true; break
+                end
+            end
+            if not clash then
+                local chest = {
+                    col    = wc,
+                    row    = wr,
+                    item   = CHEST_ITEMS[math.random(#CHEST_ITEMS)],
+                    opened = false,
+                }
+                table.insert(chunkChests, chest)
+                table.insert(self.chests, chest)
+                placed = placed + 1
+            end
+        end
+    end
+
+    local chunk = { tiles = out, chests = chunkChests }
+    self.chunks[key] = chunk
+    return chunk
+end
+
+function World:tileAt(col, row)
+    local cs = CHUNK_SIZE
+    local cx = math.floor((col - 1) / cs)
+    local cy = math.floor((row - 1) / cs)
+    local lc = (col - 1) % cs + 1
+    local lr = (row - 1) % cs + 1
+    local ch = self:_loadChunk(cx, cy)
+    return ch.tiles[lr][lc]
+end
+
+function World:ensureChunks(camX, camY, sw, sh)
+    local ts  = TILE_SIZE * SCALE
+    local cs  = CHUNK_SIZE
+    local csp = cs * ts
+    local cx0 = math.floor(camX / csp) - RENDER_PAD
+    local cy0 = math.floor(camY / csp) - RENDER_PAD
+    local cx1 = math.floor((camX + sw) / csp) + RENDER_PAD
+    local cy1 = math.floor((camY + sh) / csp) + RENDER_PAD
+    for cy = cy0, cy1 do
+        for cx = cx0, cx1 do
+            if cx >= 0 and cy >= 0 then
+                self:_loadChunk(cx, cy)
+            end
+        end
+    end
 end
 
 function World:findSpawn()
     local ts = TILE_SIZE * SCALE
-    for r = 3, self.rows - 3 do
-        for c = 3, self.cols - 3 do
-            if self.map[r][c] == T.GRASS then
+    for r = 5, 28 do
+        for c = 5, 28 do
+            if self:tileAt(c, r) == T.GRASS then
                 return (c - 1) * ts, (r - 1) * ts
             end
         end
     end
-    return 3 * ts, 3 * ts
+    return 5 * ts, 5 * ts
 end
 
 function World:isSolid(px, py, pw, ph)
@@ -245,8 +394,9 @@ function World:isSolid(px, py, pw, ph)
     local r2 = math.floor((py + ph - 1) / ts) + 1
     for r = r1, r2 do
         for c = c1, c2 do
-            if r >= 1 and r <= self.rows and c >= 1 and c <= self.cols then
-                if SOLID[self.map[r][c]] then return true end
+            if c >= 1 and r >= 1 then
+                local id = self:tileAt(c, r)
+                if SOLID[id] then return true end
             end
         end
     end
@@ -259,8 +409,8 @@ function World:tryOpenChest(player)
     local py = player.y + ts / 2
     for _, ch in ipairs(self.chests) do
         if not ch.opened then
-            local cx = (ch.col - 1) * ts + ts / 2
-            local cy = (ch.row - 1) * ts + ts / 2
+            local cx   = (ch.col - 1) * ts + ts / 2
+            local cy   = (ch.row - 1) * ts + ts / 2
             local dist = math.sqrt((px - cx) ^ 2 + (py - cy) ^ 2)
             if dist < ts * 1.2 then
                 ch.opened = true
@@ -283,17 +433,20 @@ function World:update(dt)
 end
 
 function World:draw(camera)
-    local sw, sh   = love.graphics.getDimensions()
-    local ts       = TILE_SIZE * SCALE
+    local sw, sh = love.graphics.getDimensions()
+    local ts     = TILE_SIZE * SCALE
+    local cs     = CHUNK_SIZE
+
+    self:ensureChunks(camera.x, camera.y, sw, sh)
 
     local startCol = math.max(1, math.floor(camera.x / ts))
     local startRow = math.max(1, math.floor(camera.y / ts))
-    local endCol   = math.min(self.cols, math.ceil((camera.x + sw) / ts) + 1)
-    local endRow   = math.min(self.rows, math.ceil((camera.y + sh) / ts) + 1)
+    local endCol   = math.floor((camera.x + sw) / ts) + 2
+    local endRow   = math.floor((camera.y + sh) / ts) + 2
 
     for r = startRow, endRow do
         for c = startCol, endCol do
-            local id  = self.map[r][c]
+            local id  = self:tileAt(c, r)
             local img = self.tiles[id]
             if id == T.WATER then
                 img = (self.waterFrame == 1) and self.tiles[T.WATER] or self.waterRipple
