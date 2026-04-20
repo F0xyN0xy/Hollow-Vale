@@ -2,54 +2,71 @@ Player = {}
 Player.__index = Player
 
 function Player:new(world)
-    local p          = setmetatable({}, Player)
-    local ts         = TILE_SIZE * SCALE
+    local p            = setmetatable({}, Player)
+    local ts           = TILE_SIZE * SCALE
 
-    p.x              = 9 * ts
-    p.y              = 7 * ts
+    p.x                = 9 * ts
+    p.y                = 7 * ts
 
-    p.direction      = "down"
-    p.moving         = false
+    p.direction        = "down"
+    p.moving           = false
 
-    p.maxHp          = 6
-    p.hp             = 6
-    p.invincible     = 0
-    p.invincibleMax  = 1.0
+    p.maxHp            = 6
+    p.hp               = 6
+    p.invincible       = 0
+    p.invincibleMax    = 1.0
 
-    p.frame          = 1
-    p.frameTime      = 0
-    p.frameDur       = 0.18
+    p.maxStamina       = 3
+    p.stamina          = 3
+    p.staminaRegen     = 0.0
+    p.staminaRegenRate = 1.5
 
-    p.attacking      = false
-    p.attackTimer    = 0
-    p.attackDur      = 0.25
-    p.attackCooldown = 0
+    p.rolling          = false
+    p.rollTimer        = 0
+    p.rollDur          = 0.32
+    p.rollCooldown     = 0
+    p.rollDx           = 0
+    p.rollDy           = 0
+    p.rollSpeed        = 320 * SCALE
 
-    local wb         = "assets/Player/Walking sprites/"
-    p.walkSprites    = {
+    p.swordLevel       = 1
+
+    p.frame            = 1
+    p.frameTime        = 0
+    p.frameDur         = 0.18
+
+    p.attacking        = false
+    p.attackTimer      = 0
+    p.attackDur        = 0.25
+    p.attackCooldown   = 0
+
+    p.screenShake      = 0
+
+    local wb           = "assets/Player/Walking sprites/"
+    p.walkSprites      = {
         down  = { love.graphics.newImage(wb .. "boy_down_1.png"), love.graphics.newImage(wb .. "boy_down_2.png") },
         up    = { love.graphics.newImage(wb .. "boy_up_1.png"), love.graphics.newImage(wb .. "boy_up_2.png") },
         left  = { love.graphics.newImage(wb .. "boy_left_1.png"), love.graphics.newImage(wb .. "boy_left_2.png") },
         right = { love.graphics.newImage(wb .. "boy_right_1.png"), love.graphics.newImage(wb .. "boy_right_2.png") },
     }
 
-    local ab         = "assets/Attacking sprites/"
-    p.attackSprites  = {
+    local ab           = "assets/Attacking sprites/"
+    p.attackSprites    = {
         down  = { love.graphics.newImage(ab .. "boy_attack_down_1.png"), love.graphics.newImage(ab .. "boy_attack_down_2.png") },
         up    = { love.graphics.newImage(ab .. "boy_attack_up_1.png"), love.graphics.newImage(ab .. "boy_attack_up_2.png") },
         left  = { love.graphics.newImage(ab .. "boy_attack_left_1.png"), love.graphics.newImage(ab .. "boy_attack_left_2.png") },
         right = { love.graphics.newImage(ab .. "boy_attack_right_1.png"), love.graphics.newImage(ab .. "boy_attack_right_2.png") },
     }
 
-    local ok1, hf    = pcall(love.graphics.newImage, "assets/Object/heart_full.png")
-    local ok2, hh    = pcall(love.graphics.newImage, "assets/Object/heart_half.png")
-    local ok3, hb    = pcall(love.graphics.newImage, "assets/Object/heart_blank.png")
-    p.heartFull      = ok1 and hf or nil
-    p.heartHalf      = ok2 and hh or nil
-    p.heartBlank     = ok3 and hb or nil
+    local ok1, hf      = pcall(love.graphics.newImage, "assets/Object/heart_full.png")
+    local ok2, hh      = pcall(love.graphics.newImage, "assets/Object/heart_half.png")
+    local ok3, hb      = pcall(love.graphics.newImage, "assets/Object/heart_blank.png")
+    p.heartFull        = ok1 and hf or nil
+    p.heartHalf        = ok2 and hh or nil
+    p.heartBlank       = ok3 and hb or nil
 
-    local ok, ss     = pcall(love.audio.newSource, "assets/Sound/cursor.wav", "static")
-    p.stepSound      = ok and ss or nil
+    local ok, ss       = pcall(love.audio.newSource, "assets/Sound/cursor.wav", "static")
+    p.stepSound        = ok and ss or nil
     if p.stepSound then p.stepSound:setVolume(0.25) end
     p.stepTimer   = 0
     p.stepDur     = 0.36
@@ -58,22 +75,31 @@ function Player:new(world)
     p.damageSound = okd and sd or nil
     if p.damageSound then p.damageSound:setVolume(0.6) end
 
+    local okr, sr = pcall(love.audio.newSource, "assets/Sound/cursor.wav", "static")
+    p.rollSound = okr and sr or nil
+    if p.rollSound then p.rollSound:setVolume(0.3) end
+
     return p
 end
 
 function Player:takeDamage(dmg)
-    if self.invincible > 0 then return end
+    if self.invincible > 0 or self.rolling then return end
     self.hp = math.max(0, self.hp - dmg)
     self.invincible = self.invincibleMax
+    self.screenShake = 0.3
     if self.damageSound then
         self.damageSound:stop(); self.damageSound:play()
     end
 end
 
+function Player:heal(amount)
+    self.hp = math.min(self.maxHp, self.hp + amount)
+end
+
 function Player:getAttackBox()
     if not self.attacking then return nil end
     local ts    = TILE_SIZE * SCALE
-    local reach = ts * 0.9
+    local reach = ts * (self.swordLevel >= 2 and 1.2 or 0.9)
     local thick = ts * 0.7
     local cx    = self.x + ts / 2
     local cy    = self.y + ts / 2
@@ -84,12 +110,90 @@ function Player:getAttackBox()
     if d == "up" then return { x = cx - thick / 2, y = cy - reach, w = thick, h = reach } end
 end
 
+function Player:getAttackDamage()
+    return self.swordLevel >= 2 and 2 or 1
+end
+
+function Player:tryRoll()
+    if self.rolling or self.rollCooldown > 0 or self.stamina < 1 then return end
+    if self.attacking then return end
+
+    local dx, dy = 0, 0
+    if love.keyboard.isDown("up", "w") then dy = -1 end
+    if love.keyboard.isDown("down", "s") then dy = 1 end
+    if love.keyboard.isDown("left", "a") then dx = -1 end
+    if love.keyboard.isDown("right", "d") then dx = 1 end
+
+    if dx == 0 and dy == 0 then
+        if self.direction == "up" then
+            dy = -1
+        elseif self.direction == "down" then
+            dy = 1
+        elseif self.direction == "left" then
+            dx = -1
+        elseif self.direction == "right" then
+            dx = 1
+        end
+    end
+
+    if dx ~= 0 and dy ~= 0 then
+        dx = dx * 0.7071; dy = dy * 0.7071
+    end
+
+    self.rolling      = true
+    self.rollTimer    = self.rollDur
+    self.rollDx       = dx
+    self.rollDy       = dy
+    self.rollCooldown = 0.5
+    self.stamina      = self.stamina - 1
+    self.staminaRegen = 0
+    self.invincible   = self.rollDur
+
+    if self.rollSound then
+        self.rollSound:stop(); self.rollSound:play()
+    end
+end
+
+function Player:addItem(itemName)
+    if not self.inventory then self.inventory = {} end
+    table.insert(self.inventory, itemName)
+
+    if itemName == "potion_red" then
+        self:heal(2)
+    elseif itemName == "boots" then
+        self.hasBoots = true
+    elseif itemName == "sword_normal" then
+        if self.swordLevel < 2 then
+            self.swordLevel = 2
+        end
+    elseif itemName == "key" then
+    end
+end
+
 function Player:update(dt, world)
     local ts  = TILE_SIZE * SCALE
     local spd = 160 * SCALE
+    if self.hasBoots then spd = spd * 1.3 end
 
     if self.invincible > 0 then
         self.invincible = math.max(0, self.invincible - dt)
+    end
+    if self.rollCooldown > 0 then
+        self.rollCooldown = math.max(0, self.rollCooldown - dt)
+    end
+    if self.attackCooldown > 0 then
+        self.attackCooldown = math.max(0, self.attackCooldown - dt)
+    end
+    if self.screenShake > 0 then
+        self.screenShake = math.max(0, self.screenShake - dt * 3)
+    end
+
+    if self.stamina < self.maxStamina then
+        self.staminaRegen = self.staminaRegen + dt
+        if self.staminaRegen >= self.staminaRegenRate then
+            self.staminaRegen = 0
+            self.stamina = math.min(self.maxStamina, self.stamina + 1)
+        end
     end
 
     if self.attacking then
@@ -99,8 +203,25 @@ function Player:update(dt, world)
             self.attackTimer = 0
         end
     end
-    if self.attackCooldown > 0 then
-        self.attackCooldown = math.max(0, self.attackCooldown - dt)
+
+    if self.rolling then
+        self.rollTimer = self.rollTimer - dt
+        if self.rollTimer <= 0 then
+            self.rolling = false
+        else
+            local margin = 4
+            local pw, ph = ts - margin * 2, ts - margin * 2
+            local rx = self.x + self.rollDx * self.rollSpeed * dt
+            local ry = self.y + self.rollDy * self.rollSpeed * dt
+            if not world:isSolid(rx + margin, self.y + margin, pw, ph) then self.x = rx end
+            if not world:isSolid(self.x + margin, ry + margin, pw, ph) then self.y = ry end
+        end
+        self.frameTime = self.frameTime + dt * 2
+        if self.frameTime >= self.frameDur then
+            self.frameTime = 0
+            self.frame = (self.frame == 1) and 2 or 1
+        end
+        return
     end
 
     local dx, dy = 0, 0
@@ -150,26 +271,38 @@ function Player:update(dt, world)
 end
 
 function Player:attack()
-    if self.attacking or self.attackCooldown > 0 then return end
+    if self.attacking or self.attackCooldown > 0 or self.rolling then return end
     self.attacking      = true
     self.attackTimer    = 0
     self.attackCooldown = 0.4
 end
 
 function Player:draw()
-    if self.invincible > 0 and math.floor(self.invincible * 10) % 2 == 0 then return end
+    if self.invincible > 0 and not self.rolling then
+        if math.floor(self.invincible * 10) % 2 == 0 then return end
+    end
 
     local sprites = self.attacking and self.attackSprites or self.walkSprites
-    local img = sprites[self.direction][self.frame]
+    local img     = sprites[self.direction][self.frame]
 
-    local ox, oy = 0, 0
+    local ox, oy  = 0, 0
     if self.attacking then
         if self.direction == "up" then oy = -TILE_SIZE * SCALE end
         if self.direction == "left" then ox = -TILE_SIZE * SCALE end
     end
 
+    local sx, sy = SCALE, SCALE
+    if self.rolling then
+        local t = 1 - (self.rollTimer / self.rollDur)
+        sx = SCALE * (1 + math.sin(t * math.pi) * 0.3)
+        sy = SCALE * (1 - math.sin(t * math.pi) * 0.2)
+        love.graphics.setColor(0.7, 0.85, 1, 0.6)
+    else
+        love.graphics.setColor(1, 1, 1)
+    end
+
+    love.graphics.draw(img, self.x + ox, self.y + oy, 0, sx, sy)
     love.graphics.setColor(1, 1, 1)
-    love.graphics.draw(img, self.x + ox, self.y + oy, 0, SCALE, SCALE)
 end
 
 function Player:drawHUD()
@@ -189,6 +322,7 @@ function Player:drawHUD()
         else
             img = self.heartBlank
         end
+
         if img then
             love.graphics.setColor(1, 1, 1)
             love.graphics.draw(img, startX + (i - 1) * iconW, startY, 0, hpScale, hpScale)
@@ -203,18 +337,27 @@ function Player:drawHUD()
             love.graphics.rectangle("fill", startX + (i - 1) * iconW, startY, 14 * hpScale, 14 * hpScale, 2, 2)
         end
     end
-    love.graphics.setColor(1, 1, 1)
-end
 
-function Player:addItem(itemName)
-    if not self.inventory then self.inventory = {} end
-    table.insert(self.inventory, itemName)
-
-    if itemName == "potion_red" then
-        self.hp = math.min(self.maxHp, self.hp + 2)
-    elseif itemName == "boots" then
-        self.hasBoots = true
+    local pipY   = startY + 16 * hpScale + 4
+    local pipW   = 12
+    local pipH   = 6
+    local pipGap = 3
+    for i = 1, self.maxStamina do
+        local filled = i <= self.stamina
+        love.graphics.setColor(filled and 0.2 or 0.15, filled and 0.7 or 0.25, filled and 1.0 or 0.35, 0.9)
+        love.graphics.rectangle("fill", startX + (i - 1) * (pipW + pipGap), pipY, pipW, pipH, 2, 2)
+        love.graphics.setColor(0, 0, 0, 0.4)
+        love.graphics.rectangle("line", startX + (i - 1) * (pipW + pipGap), pipY, pipW, pipH, 2, 2)
     end
+    love.graphics.setColor(0.6, 0.8, 1, 0.6)
+    love.graphics.print("ROLL [Shift]", startX, pipY + pipH + 2, 0, 0.8, 0.8)
+
+    if self.swordLevel >= 2 then
+        love.graphics.setColor(1, 0.85, 0.2)
+        love.graphics.print("⚔ Lv.2", startX + hearts * iconW + 8, startY + 1, 0, 0.85, 0.85)
+    end
+
+    love.graphics.setColor(1, 1, 1)
 end
 
 function Player:drawInventory(world)
