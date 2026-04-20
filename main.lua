@@ -20,13 +20,15 @@ function love.load()
     boss               = Boss:new(10, 10)
     npcs               = {}
 
+    killCount          = 0
+
     local ok, bgm      = pcall(love.audio.newSource, "assets/Sound/HollowVale.wav", "stream")
     if ok then
         bgm:setLooping(true); bgm:setVolume(0.4); bgm:play()
         overworldMusic = bgm
     end
 
-    gameState = "playing"
+    gameState    = "playing"
     victoryTimer = 0
 end
 
@@ -68,7 +70,8 @@ function love.update(dt)
     camera:follow(player, world)
     for _, npc in ipairs(npcs) do npc:update(dt, player) end
 
-    local atkBox = player:getAttackBox()
+    local atkBox    = player:getAttackBox()
+    local atkDamage = player:getAttackDamage()
 
     for i = #enemies, 1, -1 do
         local e = enemies[i]
@@ -77,7 +80,8 @@ function love.update(dt)
             local ts = TILE_SIZE * SCALE
             if atkBox.x < e.x + ts and atkBox.x + atkBox.w > e.x and
                 atkBox.y < e.y + ts and atkBox.y + atkBox.h > e.y then
-                e:takeDamage(1)
+                e:takeDamage(atkDamage)
+                if e.dead then killCount = killCount + 1 end
             end
         end
         if e:canRemove() then table.remove(enemies, i) end
@@ -94,7 +98,7 @@ function love.update(dt)
             local ts2 = TILE_SIZE * SCALE * 2
             if atkBox.x < boss.x + ts2 and atkBox.x + atkBox.w > boss.x and
                 atkBox.y < boss.y + ts2 and atkBox.y + atkBox.h > boss.y then
-                boss:takeDamage(1)
+                boss:takeDamage(atkDamage)
             end
         end
 
@@ -108,6 +112,10 @@ function love.update(dt)
                 player:takeDamage(1)
             end
         end
+
+        if boss.screenShake > 0 then
+            camera:shake(boss.screenShake)
+        end
     else
         if boss.dead and gameState == "playing" then
             gameState    = "victory"
@@ -117,6 +125,10 @@ function love.update(dt)
                 s:setVolume(0.8); s:play()
             end
         end
+    end
+
+    if player.screenShake > 0 then
+        camera:shake(player.screenShake)
     end
 
     if player.hp <= 0 and gameState == "playing" then
@@ -132,13 +144,16 @@ end
 
 function love.keypressed(key)
     if gameState == "victory" or gameState == "gameover" then
-        if key == "return" or key == "space" then
-            love.load()
-        end
+        if key == "return" or key == "space" then love.load() end
         return
     end
 
     if key == "space" or key == "z" then player:attack() end
+
+    if key == "lshift" or key == "rshift" or key == "x" then
+        player:tryRoll()
+    end
+
     if key == "e" then
         local item = world:tryOpenChest(player)
         if item then
@@ -149,11 +164,13 @@ function love.keypressed(key)
             end
         end
     end
+
     if key == "r" then
         world              = World:new()
         player.x, player.y = world:findSpawn()
         enemies            = spawnEnemies(world)
         boss               = Boss:new(10, 10)
+        killCount          = 0
     end
 end
 
@@ -171,8 +188,12 @@ function love.draw()
     boss:drawHUD()
     for _, npc in ipairs(npcs) do npc:drawDialogue() end
 
+    love.graphics.setColor(1, 1, 0.6, 0.7)
+    love.graphics.print("Kills: " .. (killCount or 0), love.graphics.getWidth() - 80, 10)
+
     love.graphics.setColor(1, 1, 1, 0.3)
-    love.graphics.print("WASD move  |  Space/Z attack  |  E open/talk  |  R new world",
+    love.graphics.print(
+        "WASD move  |  Space/Z attack  |  Shift/X roll  |  E open/talk  |  R new world",
         10, love.graphics.getHeight() - 20)
     love.graphics.setColor(1, 1, 1)
 
@@ -188,11 +209,13 @@ function drawVictory()
     love.graphics.rectangle("fill", 0, 0, sw, sh)
 
     love.graphics.setColor(0.9, 0.8, 0.3, alpha)
-    love.graphics.printf("Victory", 0, sh / 2 - 40, sw, "center")
+    love.graphics.printf("Victory!", 0, sh / 2 - 50, sw, "center")
 
     if victoryTimer > 1.5 then
         love.graphics.setColor(1, 1, 1, alpha)
-        love.graphics.printf("The Skeleton Lord has been defeated.\n\nPress Space to play again",
+        love.graphics.printf(
+            string.format("The Skeleton Lord has been defeated.\nEnemies slain: %d\n\nPress Space to play again",
+                killCount or 0),
             0, sh / 2 + 10, sw, "center")
     end
     love.graphics.setColor(1, 1, 1)
@@ -203,8 +226,10 @@ function drawGameOver()
     love.graphics.setColor(0, 0, 0, 0.7)
     love.graphics.rectangle("fill", 0, 0, sw, sh)
     love.graphics.setColor(0.85, 0.2, 0.2)
-    love.graphics.printf("You died", 0, sh / 2 - 30, sw, "center")
+    love.graphics.printf("You Died", 0, sh / 2 - 40, sw, "center")
     love.graphics.setColor(1, 1, 1, 0.8)
-    love.graphics.printf("Press Space to try again", 0, sh / 2 + 20, sw, "center")
+    love.graphics.printf(
+        string.format("Enemies slain: %d\n\nPress Space to try again", killCount or 0),
+        0, sh / 2 + 10, sw, "center")
     love.graphics.setColor(1, 1, 1)
 end
