@@ -1,19 +1,51 @@
 NPC = {}
 NPC.__index = NPC
 
-local TALK_RANGE = 56
+local TALK_RANGE = 64
 
-local DIALOGUE_LINES = {
+local DIALOGUE_POOLS = {
     oldman = {
-        "Ah, a traveller...",
-        "They say the forest east of here",
-        "has been restless of late.",
-        "Best keep your wits about you.",
+        {
+            "Ah, a traveller from afar...",
+            "This village has stood for generations.",
+            "But lately, dark things stir in the east.",
+            "The Skeleton Lord grows bolder each night.",
+            "Find him before he finds you.",
+        },
+        {
+            "You look weary, friend.",
+            "The forests here aren't safe after dark.",
+            "Bats, slimes, orcs... they've multiplied.",
+            "I'd rest here if I were you.",
+        },
+        {
+            "The old ruins to the east...",
+            "Nobody who goes there returns unchanged.",
+            "Some don't return at all.",
+            "Best keep your sword sharp.",
+        },
     },
     merchant = {
-        "Welcome, welcome!",
-        "I have wares if you have coin.",
-        "Come back once you've explored a bit.",
+        {
+            "Welcome, welcome!",
+            "A fine adventurer such as yourself",
+            "deserves only the best goods.",
+            "Check the chests scattered about — ",
+            "many hold rare treasures worth having!",
+        },
+        {
+            "Between you and me...",
+            "The shield I sold to the last traveller",
+            "saved her life against the boss.",
+            "Equip everything you find — it all helps!",
+        },
+        {
+            "The boots make you faster.",
+            "The shield reduces damage taken.",
+            "Potions restore two hearts.",
+            "The axe upgrades your attack power!",
+            "Use [ Q ] to equip or consume items.",
+        },
     },
 }
 
@@ -42,10 +74,12 @@ function NPC:new(kind, col, row, facing)
     n.frameTime     = 0
     n.frameDur      = 0.6
 
-    n.dialogueLines = DIALOGUE_LINES[kind] or { "..." }
+    local pool      = DIALOGUE_POOLS[kind] or { { "..." } }
+    n.dialogueLines = pool[math.random(#pool)]
     n.dialogueIndex = 1
     n.dialogueOpen  = false
     n.talkCooldown  = 0
+    n.villageIndex  = 0
 
     local ok, snd   = pcall(love.audio.newSource, "assets/Sound/speak.wav", "static")
     n.speakSound    = ok and snd or nil
@@ -55,7 +89,7 @@ function NPC:new(kind, col, row, facing)
 end
 
 function NPC:update(dt, player)
-    n = self
+    local n = self
     n.frameTime = n.frameTime + dt
     if n.frameTime >= n.frameDur then
         n.frameTime = 0
@@ -64,6 +98,20 @@ function NPC:update(dt, player)
 
     if n.talkCooldown > 0 then
         n.talkCooldown = n.talkCooldown - dt
+    end
+
+    if not n.dialogueOpen then
+        local ts = TILE_SIZE * SCALE
+        local dx = (player.x + ts / 2) - (n.x + ts / 2)
+        local dy = (player.y + ts / 2) - (n.y + ts / 2)
+        local dist = math.sqrt(dx * dx + dy * dy)
+        if dist < TALK_RANGE * 1.5 then
+            if math.abs(dx) > math.abs(dy) then
+                n.facing = dx > 0 and "right" or "left"
+            else
+                n.facing = dy > 0 and "down" or "up"
+            end
+        end
     end
 end
 
@@ -82,6 +130,8 @@ function NPC:tryTalk(player)
             self.dialogueOpen  = false
             self.dialogueIndex = 1
             self.talkCooldown  = 0.4
+            local pool         = DIALOGUE_POOLS[self.kind] or { { "..." } }
+            self.dialogueLines = pool[math.random(#pool)]
         end
     else
         self.dialogueOpen  = true
@@ -103,6 +153,7 @@ function NPC:draw()
         love.graphics.setColor(1, 1, 1)
         love.graphics.draw(img, self.x, self.y, 0, SCALE, SCALE)
     end
+
 end
 
 function NPC:drawDialogue()
@@ -112,32 +163,83 @@ function NPC:drawDialogue()
     local sh   = love.graphics.getHeight()
 
     local boxW = sw - 80
-    local boxH = 80
+    local boxH = 90
     local boxX = 40
     local boxY = sh - boxH - 24
 
-    love.graphics.setColor(0, 0, 0, 0.6)
-    love.graphics.rectangle("fill", boxX + 3, boxY + 3, boxW, boxH, 6, 6)
+    love.graphics.setColor(0, 0, 0, 0.5)
+    love.graphics.rectangle("fill", boxX + 4, boxY + 4, boxW, boxH, 6, 6)
 
-    love.graphics.setColor(0.08, 0.07, 0.12, 0.96)
+    love.graphics.setColor(0.06, 0.05, 0.10, 0.97)
     love.graphics.rectangle("fill", boxX, boxY, boxW, boxH, 6, 6)
 
     love.graphics.setColor(0.55, 0.48, 0.35)
     love.graphics.setLineWidth(2)
     love.graphics.rectangle("line", boxX, boxY, boxW, boxH, 6, 6)
+    love.graphics.setLineWidth(1)
 
+    local portX = boxX + 12
+    local portY = boxY + 12
+    local portS = 66
+    if self.kind == "merchant" then
+        love.graphics.setColor(0.3, 0.6, 0.9, 0.8)
+    else
+        love.graphics.setColor(0.5, 0.4, 0.3, 0.8)
+    end
+    love.graphics.rectangle("fill", portX, portY, portS, portS, 4, 4)
+    love.graphics.setColor(0.7, 0.6, 0.4)
+    love.graphics.setLineWidth(1.5)
+    love.graphics.rectangle("line", portX, portY, portS, portS, 4, 4)
+    love.graphics.setLineWidth(1)
+
+    local imgs = self.sprites["down"]
+    local pimg = imgs and imgs[1]
+    if pimg then
+        love.graphics.setColor(1, 1, 1)
+        local iw = pimg:getWidth()
+        local ih = pimg:getHeight()
+        local ps = math.min(portS / iw, portS / ih) * 0.85
+        love.graphics.draw(pimg,
+            portX + portS / 2 - iw * ps / 2,
+            portY + portS / 2 - ih * ps / 2,
+            0, ps, ps)
+    end
+
+    local textX = portX + portS + 12
     love.graphics.setColor(0.9, 0.78, 0.45)
     local label = self.kind:sub(1, 1):upper() .. self.kind:sub(2)
-    love.graphics.print(label, boxX + 14, boxY + 10)
+    love.graphics.print(label, textX, boxY + 12)
 
     love.graphics.setColor(0.92, 0.90, 0.86)
     local line = self.dialogueLines[self.dialogueIndex] or ""
-    love.graphics.print(line, boxX + 14, boxY + 32)
+    love.graphics.printf(line, textX, boxY + 32, boxW - textX + boxX - 12, "left")
+
+    local dotY = boxY + boxH - 18
+    for i = 1, #self.dialogueLines do
+        if i == self.dialogueIndex then
+            love.graphics.setColor(0.9, 0.78, 0.45, 1)
+        else
+            love.graphics.setColor(0.4, 0.38, 0.3, 0.7)
+        end
+        love.graphics.circle("fill", textX + (i - 1) * 12, dotY, 3)
+    end
 
     local hint = "[ E ] " .. (self.dialogueIndex < #self.dialogueLines and "next" or "close")
     love.graphics.setColor(0.5, 0.5, 0.5)
-    love.graphics.print(hint, boxX + boxW - 80, boxY + boxH - 20)
+    love.graphics.print(hint, boxX + boxW - 90, boxY + boxH - 20)
 
     love.graphics.setColor(1, 1, 1)
     love.graphics.setLineWidth(1)
+end
+
+function NPC:drawProximityHint(player)
+    local ts = TILE_SIZE * SCALE
+    local dx = (player.x + ts / 2) - (self.x + ts / 2)
+    local dy = (player.y + ts / 2) - (self.y + ts / 2)
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist < 48 and not self.dialogueOpen then
+        love.graphics.setColor(1, 1, 0.6, 0.9)
+        love.graphics.print("[E]", self.x + ts / 2 - 8, self.y - 18)
+        love.graphics.setColor(1, 1, 1)
+    end
 end
