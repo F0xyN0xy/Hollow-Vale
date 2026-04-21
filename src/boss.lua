@@ -535,7 +535,6 @@ function Boss:draw()
     local ts = TILE_SIZE * SCALE
 
     for _, p in ipairs(self.particles) do p:draw() end
-
     for _, fb in ipairs(self.fireballs) do fb:draw() end
 
     if self:canRemove() then return end
@@ -607,7 +606,7 @@ function Boss:drawHUD()
 
     love.graphics.setColor(0.85, 0.75, 0.4)
     local label = self.phase == 2 and "Skeleton Lord  [ phase II ]" or "Skeleton Lord"
-    if self.enraged then label = label .. "  ⚡ ENRAGED" end
+    if self.enraged then label = label .. "  !! ENRAGED" end
     love.graphics.print(label, bx, by - 14)
 
     love.graphics.setColor(0.25, 0.1, 0.1)
