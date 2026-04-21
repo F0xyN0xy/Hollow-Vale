@@ -30,6 +30,8 @@ function Player:new(world)
     p.rollSpeed        = 320 * SCALE
 
     p.swordLevel       = 1
+    p.hasShield        = false
+    p.hasLantern       = false
 
     p.frame            = 1
     p.frameTime        = 0
@@ -41,6 +43,11 @@ function Player:new(world)
     p.attackCooldown   = 0
 
     p.screenShake      = 0
+
+    p.inventory        = {}
+    p.itemCounts       = {}
+    p.selectedSlot     = 1
+    p.useFlash         = 0
 
     local wb           = "assets/Player/Walking sprites/"
     p.walkSprites      = {
@@ -76,16 +83,76 @@ function Player:new(world)
     if p.damageSound then p.damageSound:setVolume(0.6) end
 
     local okr, sr = pcall(love.audio.newSource, "assets/Sound/cursor.wav", "static")
-    p.rollSound = okr and sr or nil
+    p.rollSound   = okr and sr or nil
     if p.rollSound then p.rollSound:setVolume(0.3) end
+
+    local okp, sp = pcall(love.audio.newSource, "assets/Sound/coin.wav", "static")
+    p.useSound    = okp and sp or nil
+    if p.useSound then p.useSound:setVolume(0.5) end
 
     return p
 end
 
+local ITEM_USE = {
+    potion_red = function(p)
+        if p.hp >= p.maxHp then return false end
+        p:heal(2)
+        p.useFlash = 0.3
+        return true
+    end,
+    boots = function(p)
+        return false
+    end,
+    lantern = function(p)
+        p.hasLantern = not p.hasLantern
+        p.useFlash = 0.2
+        return true
+    end,
+    shield_blue = function(p)
+        p.hasShield = not p.hasShield
+        p.useFlash = 0.2
+        return true
+    end,
+    axe = function(p)
+        if p.swordLevel < 3 then
+            p.swordLevel = p.swordLevel + 1
+            p.useFlash   = 0.4
+            return true
+        end
+        return false
+    end,
+    sword_normal = function(p)
+        if p.swordLevel < 2 then
+            p.swordLevel = 2
+            p.useFlash   = 0.4
+            return true
+        end
+        return false
+    end,
+    key = function(p)
+        return false
+    end,
+    coin_bronze = function(p)
+        return false
+    end,
+}
+
+local ITEM_META = {
+    potion_red   = { label = "Potion", consumable = true },
+    boots        = { label = "Boots", consumable = false },
+    lantern      = { label = "Lantern", consumable = false },
+    shield_blue  = { label = "Shield", consumable = false },
+    axe          = { label = "Axe", consumable = true },
+    sword_normal = { label = "Sword", consumable = true },
+    key          = { label = "Key", consumable = false },
+    coin_bronze  = { label = "Coin", consumable = false },
+}
+
 function Player:takeDamage(dmg)
     if self.invincible > 0 or self.rolling then return end
-    self.hp = math.max(0, self.hp - dmg)
-    self.invincible = self.invincibleMax
+    if self.hasShield then dmg = math.max(1, dmg - 1) end
+    self.hp          = math.max(0, self.hp - dmg)
+    self.invincible  = self.invincibleMax
     self.screenShake = 0.3
     if self.damageSound then
         self.damageSound:stop(); self.damageSound:play()
@@ -100,6 +167,7 @@ function Player:getAttackBox()
     if not self.attacking then return nil end
     local ts    = TILE_SIZE * SCALE
     local reach = ts * (self.swordLevel >= 2 and 1.2 or 0.9)
+    if self.swordLevel >= 3 then reach = ts * 1.5 end
     local thick = ts * 0.7
     local cx    = self.x + ts / 2
     local cy    = self.y + ts / 2
@@ -111,7 +179,9 @@ function Player:getAttackBox()
 end
 
 function Player:getAttackDamage()
-    return self.swordLevel >= 2 and 2 or 1
+    if self.swordLevel >= 3 then return 3 end
+    if self.swordLevel >= 2 then return 2 end
+    return 1
 end
 
 function Player:tryRoll()
@@ -156,18 +226,58 @@ end
 
 function Player:addItem(itemName)
     if not self.inventory then self.inventory = {} end
-    table.insert(self.inventory, itemName)
+    if not self.itemCounts then self.itemCounts = {} end
 
-    if itemName == "potion_red" then
-        self:heal(2)
-    elseif itemName == "boots" then
-        self.hasBoots = true
-    elseif itemName == "sword_normal" then
-        if self.swordLevel < 2 then
-            self.swordLevel = 2
+    self.itemCounts[itemName] = (self.itemCounts[itemName] or 0) + 1
+
+    local found = false
+    for _, name in ipairs(self.inventory) do
+        if name == itemName then
+            found = true; break
         end
-    elseif itemName == "key" then
     end
+    if not found then
+        table.insert(self.inventory, itemName)
+    end
+
+    if itemName == "boots" then
+        self.hasBoots = true
+    end
+end
+
+function Player:useSelectedItem()
+    if not self.inventory or #self.inventory == 0 then return end
+    local slot = math.min(self.selectedSlot, #self.inventory)
+    local name = self.inventory[slot]
+    if not name then return end
+
+    local count = self.itemCounts[name] or 0
+    if count <= 0 then return end
+
+    local useFn = ITEM_USE[name]
+    if not useFn then return end
+
+    local used = useFn(self)
+
+    if used then
+        local meta = ITEM_META[name]
+        if meta and meta.consumable then
+            self.itemCounts[name] = self.itemCounts[name] - 1
+            if self.itemCounts[name] <= 0 then
+                self.itemCounts[name] = 0
+                table.remove(self.inventory, slot)
+                self.selectedSlot = math.max(1, math.min(self.selectedSlot, #self.inventory))
+            end
+        end
+        if self.useSound then
+            self.useSound:stop(); self.useSound:play()
+        end
+    end
+end
+
+function Player:selectSlot(n)
+    if not self.inventory then return end
+    self.selectedSlot = math.max(1, math.min(n, math.max(1, #self.inventory)))
 end
 
 function Player:update(dt, world)
@@ -186,6 +296,9 @@ function Player:update(dt, world)
     end
     if self.screenShake > 0 then
         self.screenShake = math.max(0, self.screenShake - dt * 3)
+    end
+    if self.useFlash > 0 then
+        self.useFlash = math.max(0, self.useFlash - dt * 4)
     end
 
     if self.stamina < self.maxStamina then
@@ -243,12 +356,12 @@ function Player:update(dt, world)
     if dx ~= 0 and dy ~= 0 then
         dx = dx * 0.7071; dy = dy * 0.7071
     end
-    self.moving = (dx ~= 0 or dy ~= 0)
+    self.moving  = (dx ~= 0 or dy ~= 0)
 
     local margin = 4
     local pw, ph = ts - margin * 2, ts - margin * 2
-    local newX = self.x + dx * spd * dt
-    local newY = self.y + dy * spd * dt
+    local newX   = self.x + dx * spd * dt
+    local newY   = self.y + dy * spd * dt
     if not world:isSolid(newX + margin, self.y + margin, pw, ph) then self.x = newX end
     if not world:isSolid(self.x + margin, newY + margin, pw, ph) then self.y = newY end
 
@@ -294,10 +407,20 @@ function Player:draw()
     local sx, sy = SCALE, SCALE
     if self.rolling then
         local t = 1 - (self.rollTimer / self.rollDur)
-        sx = SCALE * (1 + math.sin(t * math.pi) * 0.3)
-        sy = SCALE * (1 - math.sin(t * math.pi) * 0.2)
+        sx      = SCALE * (1 + math.sin(t * math.pi) * 0.3)
+        sy      = SCALE * (1 - math.sin(t * math.pi) * 0.2)
         love.graphics.setColor(0.7, 0.85, 1, 0.6)
+    elseif self.useFlash > 0 then
+        local f = self.useFlash * 4
+        love.graphics.setColor(0.6 + f * 0.4, 1, 0.6 + f * 0.4, 1)
     else
+        love.graphics.setColor(1, 1, 1)
+    end
+
+    if self.hasShield and not self.rolling then
+        love.graphics.setColor(0.4, 0.6, 1, 0.3)
+        love.graphics.draw(img, self.x + ox - 1, self.y + oy, 0, sx, sy)
+        love.graphics.draw(img, self.x + ox + 1, self.y + oy, 0, sx, sy)
         love.graphics.setColor(1, 1, 1)
     end
 
@@ -349,12 +472,25 @@ function Player:drawHUD()
         love.graphics.setColor(0, 0, 0, 0.4)
         love.graphics.rectangle("line", startX + (i - 1) * (pipW + pipGap), pipY, pipW, pipH, 2, 2)
     end
-    love.graphics.setColor(0.6, 0.8, 1, 0.6)
-    love.graphics.print("ROLL [Shift]", startX, pipY + pipH + 2, 0, 0.8, 0.8)
 
-    if self.swordLevel >= 2 then
+    local badgeX = startX
+    local badgeY = pipY + pipH + 4
+    if self.hasBoots then
+        love.graphics.setColor(0.8, 0.6, 0.2, 0.9)
+        love.graphics.print("👟 Boots", badgeX, badgeY, 0, 0.75, 0.75)
+        badgeX = badgeX + 55
+    end
+    if self.hasShield then
+        love.graphics.setColor(0.4, 0.6, 1, 0.9)
+        love.graphics.print("🛡 Shield", badgeX, badgeY, 0, 0.75, 0.75)
+        badgeX = badgeX + 58
+    end
+    if self.swordLevel >= 3 then
+        love.graphics.setColor(1, 0.4, 0.1)
+        love.graphics.print("⚔ Lv.3", badgeX, badgeY, 0, 0.85, 0.85)
+    elseif self.swordLevel >= 2 then
         love.graphics.setColor(1, 0.85, 0.2)
-        love.graphics.print("⚔ Lv.2", startX + hearts * iconW + 8, startY + 1, 0, 0.85, 0.85)
+        love.graphics.print("⚔ Lv.2", badgeX, badgeY, 0, 0.85, 0.85)
     end
 
     love.graphics.setColor(1, 1, 1)
@@ -363,25 +499,66 @@ end
 function Player:drawInventory(world)
     if not self.inventory or #self.inventory == 0 then return end
     local sh     = love.graphics.getHeight()
-    local ts     = 16 * 2
+    local ts     = 32
     local pad    = 4
+    local gap    = 2
+    local n      = #self.inventory
+    local totalW = n * (ts + gap) - gap + pad * 2
     local startX = 10
     local startY = sh - ts - 14
 
-    love.graphics.setColor(0, 0, 0, 0.5)
-    love.graphics.rectangle("fill", startX - pad, startY - pad,
-        #self.inventory * (ts + pad) + pad, ts + pad * 2, 4, 4)
+    love.graphics.setColor(0, 0, 0, 0.55)
+    love.graphics.rectangle("fill", startX - pad, startY - pad - 2,
+        totalW, ts + pad * 2 + 20, 5, 5)
+    love.graphics.setColor(0.4, 0.35, 0.25, 0.7)
+    love.graphics.setLineWidth(1.5)
+    love.graphics.rectangle("line", startX - pad, startY - pad - 2,
+        totalW, ts + pad * 2 + 20, 5, 5)
+    love.graphics.setLineWidth(1)
 
     for i, item in ipairs(self.inventory) do
+        local x     = startX + (i - 1) * (ts + gap)
+        local sel   = (i == self.selectedSlot)
+        local count = self.itemCounts[item] or 0
+
+        if sel then
+            love.graphics.setColor(0.9, 0.75, 0.2, 0.7)
+        else
+            love.graphics.setColor(0.2, 0.18, 0.14, 0.8)
+        end
+        love.graphics.rectangle("fill", x, startY, ts, ts, 3, 3)
+
+        love.graphics.setColor(sel and 1 or 0.45, sel and 0.85 or 0.40, sel and 0.1 or 0.3, 1)
+        love.graphics.setLineWidth(sel and 2 or 1)
+        love.graphics.rectangle("line", x, startY, ts, ts, 3, 3)
+        love.graphics.setLineWidth(1)
+
         local img = world and world.itemSprites and world.itemSprites[item]
-        local x = startX + (i - 1) * (ts + pad)
         if img then
             love.graphics.setColor(1, 1, 1)
-            love.graphics.draw(img, x, startY, 0, 2, 2)
+            local iw = img:getWidth()
+            local ih = img:getHeight()
+            local sc = math.min((ts - 4) / iw, (ts - 4) / ih) * (1 / 1)
+            love.graphics.draw(img, x + 2, startY + 2, 0, sc * 2, sc * 2)
         else
-            love.graphics.setColor(0.8, 0.6, 0.2)
-            love.graphics.rectangle("fill", x, startY, ts, ts, 3, 3)
+            love.graphics.setColor(0.7, 0.5, 0.2)
+            love.graphics.rectangle("fill", x + 4, startY + 4, ts - 8, ts - 8, 2, 2)
         end
+
+        local meta = ITEM_META[item]
+        if meta and meta.consumable and count > 1 then
+            love.graphics.setColor(0, 0, 0, 0.7)
+            love.graphics.rectangle("fill", x + ts - 13, startY + ts - 12, 12, 12, 2, 2)
+            love.graphics.setColor(1, 1, 0.6)
+            love.graphics.print(count, x + ts - 12, startY + ts - 13, 0, 0.75, 0.75)
+        end
+
+        love.graphics.setColor(0.6, 0.6, 0.6, 0.7)
+        love.graphics.print(i, x + 2, startY + 1, 0, 0.6, 0.6)
     end
+
+    love.graphics.setColor(0.6, 0.8, 1, 0.7)
+    love.graphics.print("[Q] Use  [1-9] Select", startX, startY + ts + 3, 0, 0.75, 0.75)
+
     love.graphics.setColor(1, 1, 1)
 end
