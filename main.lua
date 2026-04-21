@@ -11,6 +11,10 @@ function love.load()
     require("src/boss")
 
     math.randomseed(os.time())
+    initGame()
+end
+
+function initGame()
     world              = World:new()
     camera             = Camera:new()
     player             = Player:new(world)
@@ -18,20 +22,26 @@ function love.load()
 
     world:revealFog(player)
 
-    enemies       = spawnEnemies(world)
-    boss          = Boss:new(10, 10)
-    npcs          = {}
+    enemies          = spawnEnemies(world)
+    local bCol, bRow = world:findBossSpawn()
+    boss             = Boss:new(bCol, bRow)
+    npcs             = world:spawnVillageNPCs()
 
-    killCount     = 0
+    killCount        = 0
+    showMap          = false
 
-    local ok, bgm = pcall(love.audio.newSource, "assets/Sound/HollowVale.wav", "stream")
+    local ok, bgm    = pcall(love.audio.newSource, "assets/Sound/HollowVale.wav", "stream")
     if ok then
         bgm:setLooping(true); bgm:setVolume(0.4); bgm:play()
         overworldMusic = bgm
+    else
+        overworldMusic = nil
     end
 
-    gameState    = "playing"
-    victoryTimer = 0
+    gameState       = "playing"
+    victoryTimer    = 0
+    lastPickup      = nil
+    lastPickupTimer = 0
 end
 
 function spawnEnemies(world)
@@ -39,15 +49,15 @@ function spawnEnemies(world)
     local T     = World.T
     local kinds = { "orc", "greenslime", "redslime", "bat" }
     local count = 0
-    local maxE  = 18
+    local maxE  = 30
 
     math.randomseed(world.seed + 777)
 
-    for r = 4, 60 do
-        for c = 4, 60 do
+    for r = 4, 100 do
+        for c = 4, 100 do
             if count >= maxE then break end
-            if not (r < 14 and c < 14) then
-                if world:tileAt(c, r) == T.GRASS and math.random() < 0.008 then
+            if not (r < 18 and c < 18) then
+                if world:tileAt(c, r) == T.GRASS and math.random() < 0.006 then
                     table.insert(list, Enemy:new(kinds[math.random(#kinds)], c, r))
                     count = count + 1
                 end
@@ -71,6 +81,8 @@ function love.update(dt)
         end
         return
     end
+
+    if showMap then return end
 
     world:update(dt)
     player:update(dt, world)
@@ -130,10 +142,6 @@ function love.update(dt)
         if boss.dead and gameState == "playing" then
             gameState    = "victory"
             victoryTimer = 0
-            local ok, s  = pcall(love.audio.newSource, "assets/Sound/fanfare.wav", "static")
-            if ok then
-                s:setVolume(0.8); s:play()
-            end
         end
     end
 
@@ -154,9 +162,16 @@ end
 
 function love.keypressed(key)
     if gameState == "victory" or gameState == "gameover" then
-        if key == "return" or key == "space" then love.load() end
+        if key == "return" or key == "space" then initGame() end
         return
     end
+
+    if key == "m" then
+        showMap = not showMap
+        return
+    end
+
+    if showMap then return end
 
     if key == "space" or key == "z" then player:attack() end
 
@@ -175,7 +190,6 @@ function love.keypressed(key)
         end
     end
 
-
     if key == "e" then
         local item = world:tryOpenChest(player)
         if item then
@@ -190,17 +204,14 @@ function love.keypressed(key)
     end
 
     if key == "r" then
-        world              = World:new()
-        player.x, player.y = world:findSpawn()
-        world:revealFog(player)
-        enemies   = spawnEnemies(world)
-        boss      = Boss:new(10, 10)
-        killCount = 0
+        stopOverworldMusic()
+        if boss and boss.bossMusic then boss:stopFightMusic() end
+        initGame()
     end
 end
 
 function love.wheelmoved(x, y)
-    if gameState ~= "playing" then return end
+    if gameState ~= "playing" or showMap then return end
     if not player.inventory or #player.inventory == 0 then return end
     local n = player.selectedSlot - y
     n = ((n - 1) % #player.inventory) + 1
@@ -208,6 +219,11 @@ function love.wheelmoved(x, y)
 end
 
 function love.draw()
+    if showMap then
+        drawFullMap()
+        return
+    end
+
     camera:attach()
     world:draw(camera)
     for _, npc in ipairs(npcs) do npc:draw() end
@@ -232,23 +248,157 @@ function love.draw()
         local sw        = love.graphics.getWidth()
         local sh        = love.graphics.getHeight()
 
-        local tierColor = { 0.9, 0.8, 0.3 }
-
         love.graphics.setColor(0, 0, 0, alpha * 0.6)
-        love.graphics.rectangle("fill", sw / 2 - 90, sh / 2 - 60, 180, 30, 6, 6)
-        love.graphics.setColor(tierColor[1], tierColor[2], tierColor[3], alpha)
-        love.graphics.printf("Found: " .. (lastPickup or ""), sw / 2 - 90, sh / 2 - 56, 180, "center")
+        love.graphics.rectangle("fill", sw / 2 - 100, sh / 2 - 60, 200, 30, 6, 6)
+        love.graphics.setColor(1, 0.9, 0.4, alpha)
+        love.graphics.printf("Found: " .. (lastPickup or ""), sw / 2 - 100, sh / 2 - 56, 200, "center")
         love.graphics.setColor(1, 1, 1)
     end
 
     love.graphics.setColor(1, 1, 1, 0.3)
     love.graphics.print(
-        "WASD move  |  Space/Z attack  |  Shift/X roll  |  E open/talk  |  Q use item  |  1-9 select  |  R new world",
+        "WASD move | Space/Z attack | Shift/X roll | E interact | Q use item | 1-9 select | M map | R new world",
         10, love.graphics.getHeight() - 20)
     love.graphics.setColor(1, 1, 1)
 
     if gameState == "victory" then drawVictory() end
     if gameState == "gameover" then drawGameOver() end
+end
+
+function drawFullMap()
+    local sw, sh = love.graphics.getDimensions()
+    love.graphics.setColor(0.05, 0.04, 0.08)
+    love.graphics.rectangle("fill", 0, 0, sw, sh)
+
+    local mapW      = math.min(sw - 40, sh - 80)
+    local mapH      = mapW
+    local mapX      = (sw - mapW) / 2
+    local mapY      = (sh - mapH) / 2 + 20
+    local cols      = world.cols
+    local rows      = world.rows
+    local cellW     = mapW / cols
+    local cellH     = mapH / rows
+
+    local T         = World.T
+    local IS_W      = {
+        [T.WATER] = true,
+        [T.WATER_N] = true,
+        [T.WATER_S] = true,
+        [T.WATER_E] = true,
+        [T.WATER_W] = true,
+        [T.WATER_NE] = true,
+        [T.WATER_NW] = true,
+        [T.WATER_SE] = true,
+        [T.WATER_SW] = true
+    }
+
+    local FOG_SCALE = 2
+    for r = 1, rows, 2 do
+        for c = 1, cols, 2 do
+            local fc = math.floor(c / FOG_SCALE)
+            local fr = math.floor(r / FOG_SCALE)
+            if world:isFogRevealed(fc, fr) then
+                local id = world:tileAt(c, r)
+                if IS_W[id] or id == T.WATER then
+                    love.graphics.setColor(0.15, 0.35, 0.65)
+                elseif id == T.TREE then
+                    love.graphics.setColor(0.1, 0.38, 0.12)
+                elseif id == T.EARTH then
+                    love.graphics.setColor(0.48, 0.36, 0.20)
+                else
+                    love.graphics.setColor(0.22, 0.44, 0.18)
+                end
+                local px = mapX + (c - 1) * cellW
+                local py = mapY + (r - 1) * cellH
+                love.graphics.rectangle("fill", px, py, math.max(1, cellW * 2), math.max(1, cellH * 2))
+            end
+        end
+    end
+
+    for _, v in ipairs(world.villages or {}) do
+        local fc = math.floor(v.col / FOG_SCALE)
+        local fr = math.floor(v.row / FOG_SCALE)
+        if world:isFogRevealed(fc, fr) then
+            local px = mapX + (v.col - 1) * cellW
+            local py = mapY + (v.row - 1) * cellH
+            love.graphics.setColor(0.9, 0.75, 0.3, 0.9)
+            love.graphics.rectangle("fill", px - 3, py - 3, 6, 6)
+            love.graphics.setColor(0, 0, 0, 0.7)
+            love.graphics.print("Village", px + 5, py - 4, 0, 0.65, 0.65)
+        end
+    end
+
+    for _, ch in ipairs(world.chests) do
+        if not ch.opened then
+            local fc = math.floor(ch.col / FOG_SCALE)
+            local fr = math.floor(ch.row / FOG_SCALE)
+            if world:isFogRevealed(fc, fr) then
+                local px = mapX + (ch.col - 1) * cellW
+                local py = mapY + (ch.row - 1) * cellH
+                if ch.tier == "rare" then
+                    love.graphics.setColor(0.85, 0.3, 1)
+                elseif ch.tier == "uncommon" then
+                    love.graphics.setColor(0.3, 1, 0.4)
+                else
+                    love.graphics.setColor(0.9, 0.8, 0.2)
+                end
+                love.graphics.rectangle("fill", px - 1, py - 1, 3, 3)
+            end
+        end
+    end
+
+    if boss and not boss:canRemove() then
+        local ts = TILE_SIZE * SCALE
+        local bc = math.floor(boss.x / ts) + 1
+        local br = math.floor(boss.y / ts) + 1
+        local fc = math.floor(bc / FOG_SCALE)
+        local fr = math.floor(br / FOG_SCALE)
+        if world:isFogRevealed(fc, fr) then
+            local px = mapX + (bc - 1) * cellW
+            local py = mapY + (br - 1) * cellH
+            local pulse = (math.sin(love.timer.getTime() * 4) + 1) * 0.5
+            love.graphics.setColor(1, 0.1, 0.1, 0.7 + pulse * 0.3)
+            love.graphics.rectangle("fill", px - 4, py - 4, 8, 8)
+            love.graphics.setColor(1, 0.4, 0.4, 0.9)
+            love.graphics.print("BOSS", px + 5, py - 4, 0, 0.65, 0.65)
+        end
+    end
+
+    local ts  = TILE_SIZE * SCALE
+    local pc  = math.floor(player.x / ts) + 1
+    local pr  = math.floor(player.y / ts) + 1
+    local ppx = mapX + (pc - 1) * cellW
+    local ppy = mapY + (pr - 1) * cellH
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.rectangle("fill", ppx - 3, ppy - 3, 6, 6)
+    love.graphics.setColor(0.3, 0.7, 1)
+    love.graphics.setLineWidth(1.5)
+    love.graphics.rectangle("line", ppx - 3, ppy - 3, 6, 6)
+    love.graphics.setLineWidth(1)
+
+    love.graphics.setColor(0.6, 0.55, 0.4)
+    love.graphics.setLineWidth(2)
+    love.graphics.rectangle("line", mapX - 2, mapY - 2, mapW + 4, mapH + 4, 3, 3)
+    love.graphics.setLineWidth(1)
+
+    love.graphics.setColor(0.9, 0.8, 0.4)
+    love.graphics.printf("World Map  [ M ] to close", 0, mapY - 28, sw, "center")
+
+    local lx = mapX
+    local ly = mapY + mapH + 10
+    local function legend(r, g, b, label, ox)
+        love.graphics.setColor(r, g, b)
+        love.graphics.rectangle("fill", lx + ox, ly, 8, 8)
+        love.graphics.setColor(0.8, 0.8, 0.8)
+        love.graphics.print(label, lx + ox + 10, ly - 1, 0, 0.7, 0.7)
+    end
+    legend(1, 1, 1, "You", 0)
+    legend(0.9, 0.75, 0.3, "Village", 60)
+    legend(0.9, 0.8, 0.2, "Chest", 130)
+    legend(0.85, 0.3, 1, "Rare", 185)
+    legend(1, 0.1, 0.1, "Boss", 225)
+
+    love.graphics.setColor(1, 1, 1)
 end
 
 function drawVictory()
@@ -282,32 +432,4 @@ function drawGameOver()
         string.format("Enemies slain: %d\n\nPress Space to try again", killCount or 0),
         0, sh / 2 + 10, sw, "center")
     love.graphics.setColor(1, 1, 1)
-end
-
-if Camera then
-    function Camera:follow(player, world)
-        local sw, sh = love.graphics.getDimensions()
-        local tx = player.x + (TILE_SIZE * SCALE) / 2 - sw / 2
-        local ty = player.y + (TILE_SIZE * SCALE) / 2 - sh / 2
-
-        self.x = self.x + (tx - self.x) * 0.12
-        self.y = self.y + (ty - self.y) * 0.12
-
-        local worldPixelW = world.cols * TILE_SIZE * SCALE
-        local worldPixelH = world.rows * TILE_SIZE * SCALE
-        self.x = math.max(0, math.min(self.x, worldPixelW - sw))
-        self.y = math.max(0, math.min(self.y, worldPixelH - sh))
-
-        if self.shakeAmt > 0 then
-            local mag      = self.shakeAmt * 8
-            self.shakeOffX = math.random(-math.floor(mag), math.floor(mag))
-            self.shakeOffY = math.random(-math.floor(mag), math.floor(mag))
-            self.shakeAmt  = self.shakeAmt * 0.75
-            if self.shakeAmt < 0.01 then
-                self.shakeAmt  = 0
-                self.shakeOffX = 0
-                self.shakeOffY = 0
-            end
-        end
-    end
 end
