@@ -1,7 +1,7 @@
-World            = {}
-World.__index    = World
+World                   = {}
+World.__index           = World
 
-local T          = {
+local T                 = {
     GRASS    = 1,
     EARTH    = 2,
     WALL     = 3,
@@ -15,10 +15,11 @@ local T          = {
     WATER_NW = 16,
     WATER_SE = 17,
     WATER_SW = 18,
+    FLOOR    = 19,
 }
-World.T          = T
+World.T                 = T
 
-local SOLID      = {
+local SOLID             = {
     [T.TREE]     = true,
     [T.WATER]    = true,
     [T.WATER_N]  = true,
@@ -30,7 +31,7 @@ local SOLID      = {
     [T.WATER_SE] = true,
     [T.WATER_SW] = true,
 }
-local IS_WATER   = {
+local IS_WATER          = {
     [T.WATER]    = true,
     [T.WATER_N]  = true,
     [T.WATER_S]  = true,
@@ -42,12 +43,16 @@ local IS_WATER   = {
     [T.WATER_SW] = true,
 }
 
-local CHUNK_SIZE = 16
-local RENDER_PAD = 2
+local CHUNK_SIZE        = 16
+local RENDER_PAD        = 2
+local FOG_SCALE         = 2
 
-local FOG_SCALE  = 2
+local VILLAGE_POSITIONS = {
+    { 50,  30 }, { 30, 60 }, { 70, 70 }, { 100, 40 }, { 40, 100 },
+    { 120, 80 }, { 80, 120 }, { 55, 140 }, { 140, 55 },
+}
 
-local Perlin     = {}
+local Perlin            = {}
 do
     local function fade(t) return t * t * t * (t * (t * 6 - 15) + 10) end
     local function lerp(a, b, t) return a + t * (b - a) end
@@ -105,7 +110,30 @@ do
     end
 end
 
+local function inVillageZone(col, row)
+    for _, vp in ipairs(VILLAGE_POSITIONS) do
+        local vc, vr = vp[1], vp[2]
+        local dc = col - vc
+        local dr = row - vr
+        if dc * dc + dr * dr <= 64 then
+            return true
+        end
+    end
+    return false
+end
+
 local function rawTileAt(perm, tperm, col, row)
+    if inVillageZone(col, row) then
+        for _, vp in ipairs(VILLAGE_POSITIONS) do
+            local vc, vr = vp[1], vp[2]
+            local dc = col - vc
+            local dr = row - vr
+            local dsq = dc * dc + dr * dr
+            if dsq <= 9 then return T.EARTH end
+            if dsq <= 64 then return T.GRASS end
+        end
+    end
+
     local scale      = 0.045
     local n          = Perlin.octave(perm, col * scale, row * scale, 5, 0.55, 2.0)
     local h          = (n + 1) * 0.5
@@ -115,18 +143,22 @@ local function rawTileAt(perm, tperm, col, row)
         return T.WATER
     end
 
-    if h < 0.38 then return T.WATER end
+    local wscale      = 0.03
+    local wn          = Perlin.octave(perm, (col + 1000) * wscale, (row + 1000) * wscale, 3, 0.6, 2.2)
+    local waterThresh = 0.36 + wn * 0.04
+    if h < waterThresh then return T.WATER end
 
-    local tscale     = 0.12
-    local tn         = Perlin.octave(tperm, col * tscale, row * tscale, 3, 0.6, 2.0)
-    local treeChance = (h - 0.38) * 1.5
-    if tn > (0.62 - treeChance * 0.18) then
+    local tscale     = 0.10
+    local tn         = Perlin.octave(tperm, col * tscale, row * tscale, 4, 0.55, 2.0)
+    local treeChance = math.max(0, (h - waterThresh) * 2.2)
+    local treeThresh = 0.58 - treeChance * 0.12
+    if tn > treeThresh then
         return T.TREE
     end
 
-    local escale = 0.08
-    local en     = Perlin.octave(perm, (col + 500) * escale, (row + 500) * escale, 2, 0.5, 2.0)
-    if en > 0.35 and h > 0.55 then
+    local escale = 0.07
+    local en     = Perlin.octave(perm, (col + 500) * escale, (row + 500) * escale, 3, 0.5, 2.0)
+    if en > 0.30 and h > 0.50 and h < 0.75 then
         return T.EARTH
     end
 
@@ -134,12 +166,13 @@ local function rawTileAt(perm, tperm, col, row)
 end
 
 function World:new(seed)
-    local w  = setmetatable({}, World)
-    w.seed   = seed or math.random(1, 999999)
-    w.chunks = {}
-    w.chests = {}
+    local w    = setmetatable({}, World)
+    w.seed     = seed or math.random(1, 999999)
+    w.chunks   = {}
+    w.chests   = {}
+    w.villages = {}
 
-    w.fogMap = {}
+    w.fogMap   = {}
 
     math.randomseed(w.seed)
     w.perm        = Perlin.buildPerm(w.seed)
@@ -161,6 +194,7 @@ function World:new(seed)
         [T.WATER_NW] = love.graphics.newImage(nv .. "water02.png"),
         [T.WATER_SE] = love.graphics.newImage(nv .. "water09.png"),
         [T.WATER_SW] = love.graphics.newImage(nv .. "water07.png"),
+        [T.FLOOR]    = love.graphics.newImage(nv .. "earth.png"),
     }
     w.waterRipple = love.graphics.newImage(nv .. "water01.png")
     w.chestClosed = love.graphics.newImage(ob .. "chest.png")
@@ -190,6 +224,10 @@ function World:new(seed)
         for cx = 0, 3 do
             w:_loadChunk(cx, cy)
         end
+    end
+
+    for _, vp in ipairs(VILLAGE_POSITIONS) do
+        table.insert(w.villages, { col = vp[1], row = vp[2] })
     end
 
     return w
@@ -278,10 +316,12 @@ function World:_loadChunk(cx, cy)
     local chunkChests = {}
     math.randomseed(self.seed + cx * 73856093 + cy * 19349663)
     local spawnRoll = math.random()
-    local numChests = (spawnRoll < 0.15) and 1 or 0
+    local numChests = (spawnRoll < 0.05) and 1 or 0
 
-    local attempts  = 0
-    local placed    = 0
+    if cx == 0 and cy == 0 then numChests = 0 end
+
+    local attempts = 0
+    local placed   = 0
     while placed < numChests and attempts < 300 do
         attempts = attempts + 1
         local lc = math.random(3, cs - 2)
@@ -289,20 +329,22 @@ function World:_loadChunk(cx, cy)
         if out[lr][lc] == T.GRASS then
             local wc = baseC + lc
             local wr = baseR + lr
-            local clear = out[lr - 1] and out[lr - 1][lc] == T.GRASS
-                and out[lr + 1] and out[lr + 1][lc] == T.GRASS
-            if clear then
-                local tierRoll = math.random()
-                local chest    = {
-                    col    = wc,
-                    row    = wr,
-                    item   = rollChestItem(tierRoll),
-                    tier   = tierRoll < 0.55 and "common" or (tierRoll < 0.88 and "uncommon" or "rare"),
-                    opened = false,
-                }
-                table.insert(chunkChests, chest)
-                table.insert(self.chests, chest)
-                placed = placed + 1
+            if not inVillageZone(wc, wr) then
+                local clear = out[lr - 1] and out[lr - 1][lc] == T.GRASS
+                    and out[lr + 1] and out[lr + 1][lc] == T.GRASS
+                if clear then
+                    local tierRoll = math.random()
+                    local chest    = {
+                        col    = wc,
+                        row    = wr,
+                        item   = rollChestItem(tierRoll),
+                        tier   = tierRoll < 0.55 and "common" or (tierRoll < 0.88 and "uncommon" or "rare"),
+                        opened = false,
+                    }
+                    table.insert(chunkChests, chest)
+                    table.insert(self.chests, chest)
+                    placed = placed + 1
+                end
             end
         end
     end
@@ -351,6 +393,37 @@ function World:findSpawn()
     return 5 * ts, 5 * ts
 end
 
+function World:findBossSpawn()
+    for r = 140, 170 do
+        for c = 140, 170 do
+            if self:tileAt(c, r) == T.GRASS and not inVillageZone(c, r) then
+                return c, r
+            end
+        end
+    end
+    return 150, 150
+end
+
+function World:spawnVillageNPCs()
+    local npcs = {}
+    local kinds = { "oldman", "merchant" }
+    for i, v in ipairs(self.villages) do
+        local tile = self:tileAt(v.col, v.row)
+        if tile == T.GRASS or tile == T.EARTH then
+            local kind = kinds[((i - 1) % #kinds) + 1]
+            local facing = (i % 2 == 0) and "down" or "right"
+            local npc = NPC:new(kind, v.col, v.row, facing)
+            npc.villageIndex = i
+            table.insert(npcs, npc)
+            local kind2 = kinds[(i % #kinds) + 1]
+            local npc2 = NPC:new(kind2, v.col + 2, v.row + 1, "left")
+            npc2.villageIndex = i
+            table.insert(npcs, npc2)
+        end
+    end
+    return npcs
+end
+
 function World:isSolid(px, py, pw, ph)
     local ts = TILE_SIZE * SCALE
     local c1 = math.floor(px / ts) + 1
@@ -393,7 +466,7 @@ function World:revealFog(player)
     local ts     = TILE_SIZE * SCALE
     local pc     = math.floor(player.x / ts) + 1
     local pr     = math.floor(player.y / ts) + 1
-    local radius = 5
+    local radius = 6
 
     for dr = -radius, radius do
         for dc = -radius, radius do
@@ -441,6 +514,18 @@ function World:draw(camera)
                 love.graphics.setColor(1, 1, 1)
                 love.graphics.draw(img, (c - 1) * ts, (r - 1) * ts, 0, SCALE, SCALE)
             end
+        end
+    end
+
+    for _, v in ipairs(self.villages) do
+        local vx = (v.col - 1) * ts + ts / 2
+        local vy = (v.row - 1) * ts + ts / 2
+        if vx > camera.x - ts * 2 and vx < camera.x + sw + ts * 2 and
+            vy > camera.y - ts * 2 and vy < camera.y + sh + ts * 2 then
+            local t = love.timer.getTime()
+            local pulse = (math.sin(t * 1.8) + 1) * 0.5
+            love.graphics.setColor(1, 0.7, 0.2, 0.12 + pulse * 0.08)
+            love.graphics.circle("fill", vx, vy, ts * 5)
         end
     end
 
@@ -526,6 +611,21 @@ function World:drawMinimap(player, boss)
         end
     end
 
+    for _, v in ipairs(self.villages) do
+        local fc = math.floor(v.col / FOG_SCALE)
+        local fr = math.floor(v.row / FOG_SCALE)
+        if self:isFogRevealed(fc, fr) then
+            local dc = v.col - t0c
+            local dr = v.row - t0r
+            if dc >= 0 and dc < VIEW and dr >= 0 and dr < VIEW then
+                local px2 = mx + dc * scale
+                local py2 = my + dr * scale
+                love.graphics.setColor(1, 0.75, 0.2, 1)
+                love.graphics.rectangle("fill", px2 - 2, py2 - 2, 4, 4)
+            end
+        end
+    end
+
     for _, ch in ipairs(self.chests) do
         local fc = math.floor(ch.col / FOG_SCALE)
         local fr = math.floor(ch.row / FOG_SCALE)
@@ -578,4 +678,8 @@ function World:drawMinimap(player, boss)
     love.graphics.setScissor()
     love.graphics.setColor(1, 1, 1)
     love.graphics.setLineWidth(1)
+
+    love.graphics.setColor(0.7, 0.65, 0.5, 0.8)
+    love.graphics.print("[M] Map", mx, my + ms + 4, 0, 0.7, 0.7)
+    love.graphics.setColor(1, 1, 1)
 end
