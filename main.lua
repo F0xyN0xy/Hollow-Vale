@@ -16,13 +16,15 @@ function love.load()
     player             = Player:new(world)
     player.x, player.y = world:findSpawn()
 
-    enemies            = spawnEnemies(world)
-    boss               = Boss:new(10, 10)
-    npcs               = {}
+    world:revealFog(player)
 
-    killCount          = 0
+    enemies       = spawnEnemies(world)
+    boss          = Boss:new(10, 10)
+    npcs          = {}
 
-    local ok, bgm      = pcall(love.audio.newSource, "assets/Sound/HollowVale.wav", "stream")
+    killCount     = 0
+
+    local ok, bgm = pcall(love.audio.newSource, "assets/Sound/HollowVale.wav", "stream")
     if ok then
         bgm:setLooping(true); bgm:setVolume(0.4); bgm:play()
         overworldMusic = bgm
@@ -73,6 +75,9 @@ function love.update(dt)
     world:update(dt)
     player:update(dt, world)
     camera:follow(player, world)
+
+    world:revealFog(player)
+
     for _, npc in ipairs(npcs) do npc:update(dt, player) end
 
     local atkBox    = player:getAttackBox()
@@ -159,10 +164,24 @@ function love.keypressed(key)
         player:tryRoll()
     end
 
+    if key == "q" then
+        player:useSelectedItem()
+    end
+
+    for n = 1, 9 do
+        if key == tostring(n) then
+            player:selectSlot(n)
+            break
+        end
+    end
+
+
     if key == "e" then
         local item = world:tryOpenChest(player)
         if item then
             player:addItem(item)
+            lastPickup      = item
+            lastPickupTimer = 2.5
         else
             for _, npc in ipairs(npcs) do
                 if npc:tryTalk(player) then break end
@@ -173,10 +192,19 @@ function love.keypressed(key)
     if key == "r" then
         world              = World:new()
         player.x, player.y = world:findSpawn()
-        enemies            = spawnEnemies(world)
-        boss               = Boss:new(10, 10)
-        killCount          = 0
+        world:revealFog(player)
+        enemies   = spawnEnemies(world)
+        boss      = Boss:new(10, 10)
+        killCount = 0
     end
+end
+
+function love.wheelmoved(x, y)
+    if gameState ~= "playing" then return end
+    if not player.inventory or #player.inventory == 0 then return end
+    local n = player.selectedSlot - y
+    n = ((n - 1) % #player.inventory) + 1
+    player.selectedSlot = n
 end
 
 function love.draw()
@@ -193,12 +221,29 @@ function love.draw()
     boss:drawHUD()
     for _, npc in ipairs(npcs) do npc:drawDialogue() end
 
+    world:drawMinimap(player, boss)
+
     love.graphics.setColor(1, 1, 0.6, 0.7)
     love.graphics.print("Kills: " .. (killCount or 0), love.graphics.getWidth() - 80, 10)
 
+    if lastPickup and lastPickupTimer and lastPickupTimer > 0 then
+        lastPickupTimer = lastPickupTimer - love.timer.getDelta()
+        local alpha     = math.min(1, lastPickupTimer * 1.5)
+        local sw        = love.graphics.getWidth()
+        local sh        = love.graphics.getHeight()
+
+        local tierColor = { 0.9, 0.8, 0.3 }
+
+        love.graphics.setColor(0, 0, 0, alpha * 0.6)
+        love.graphics.rectangle("fill", sw / 2 - 90, sh / 2 - 60, 180, 30, 6, 6)
+        love.graphics.setColor(tierColor[1], tierColor[2], tierColor[3], alpha)
+        love.graphics.printf("Found: " .. (lastPickup or ""), sw / 2 - 90, sh / 2 - 56, 180, "center")
+        love.graphics.setColor(1, 1, 1)
+    end
+
     love.graphics.setColor(1, 1, 1, 0.3)
     love.graphics.print(
-        "WASD move  |  Space/Z attack  |  Shift/X roll  |  E open/talk  |  R new world",
+        "WASD move  |  Space/Z attack  |  Shift/X roll  |  E open/talk  |  Q use item  |  1-9 select  |  R new world",
         10, love.graphics.getHeight() - 20)
     love.graphics.setColor(1, 1, 1)
 
@@ -239,7 +284,6 @@ function drawGameOver()
     love.graphics.setColor(1, 1, 1)
 end
 
-local _origFollow = Camera and Camera.follow
 if Camera then
     function Camera:follow(player, world)
         local sw, sh = love.graphics.getDimensions()
@@ -249,8 +293,10 @@ if Camera then
         self.x = self.x + (tx - self.x) * 0.12
         self.y = self.y + (ty - self.y) * 0.12
 
-        self.x = math.max(0, self.x)
-        self.y = math.max(0, self.y)
+        local worldPixelW = world.cols * TILE_SIZE * SCALE
+        local worldPixelH = world.rows * TILE_SIZE * SCALE
+        self.x = math.max(0, math.min(self.x, worldPixelW - sw))
+        self.y = math.max(0, math.min(self.y, worldPixelH - sh))
 
         if self.shakeAmt > 0 then
             local mag      = self.shakeAmt * 8
